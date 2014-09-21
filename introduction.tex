@@ -1,0 +1,682 @@
+Memory analysis has become a powerful technique for the detection and
+identification of malware, and for digital forensic investigations
+\citep{ligh2010malware,Ligh:2014:AMF:2621971}.
+
+Fundamentally. Memory analysis is concerned with interpreting the seemingly
+unstructured raw memory data which can be collected from a live system into
+meaningful and actionable information. At first sight, the memory content of a
+live system might appear to be composed of nothing more than random
+bytes. However, those bytes are arranged in a predetermined order by the running
+software to represent a meaningful data structure. For example consider the C
+struct:
+
+\begin{lstlisting}
+typedef struct _EPROCESS {
+  unsigned long long CreateTime;
+  char[16] ImageFileName;
+} EPROCESS;
+
+\end{lstlisting}
+
+
+The compiler will decide how to overlay the struct fields in memory depending on
+their size, alignment requirements and other consideration. So for example, the
+{\em CreateTime} field might get 8 bytes, causing the {\em ImageFileName} field to
+begin 8 bytes after the start of the {\em \_EPROCESS} struct.
+
+A memory analysis framework must have the same layout information in order to
+know where each field should be found in relation to the start of the
+struct. Early memory analysis systems hard coded this layout information which
+was derived by other means (e.g. reverse engineering or simply counting the
+fields in the struct header file. \citep{schuster2007ptfinder}).
+
+This approach is not scalable though, since the struct definition change
+routinely between versions of the operating system. For example, in the above
+simplified struct of an {\em \_EPROCESS}, if additional fields are inserted, the
+layout of the field members will change to make room for the new elements. So
+for example, if another 4 byte field is added before the {\em CreateTime} field
+- all other offsets will have to increase by 4 bytes to accommodate the new
+field. This will cause all the old layout information to be incorrect and our
+interpretation of the struct in memory to be wrong.
+
+Modern memory analysis frameworks address the variations across different
+operating system versions by use of a version specific memory layout template
+mechanism. For example in Volatility \citep{volatility} or Rekall \citep{rekall}
+this information is called a {\em profile}.
+
+The Volatility memory analysis framework \citep{volatility} is shipped with a
+number of Windows profiles embedded into the program. The user chooses the
+correct profile to use depending on their image. For example, if analyzing a
+Windows 7 image, the profile might be specified as {\em Win7SP1x64}. In
+Volatility, the profile name conveys major version information (i.e. Windows 7),
+minor version information (i.e. Service Pack 1) and architecture
+(i.e. x64). Volatility uses this information to select a profile from the set of
+built-in profiles.
+
+\subsection{Deriving profile information}
+The problem still remains how to derive this struct layout information
+automatically. The windows kernel contains many struct definitions, and these
+change for each version, so a brute force solution is not scalable
+\citep{okolica2010windows}.
+
+Memory analysis frameworks are not the only case where information about memory
+layout is required. Specifically, when debugging an application, the debugger
+needs to know how to interpret the memory of the debugged program in order to
+correctly display it to the user. Since the compiler is the one originally
+deciding on the memory layout, it makes sense that the compiler generates
+debugging information about memory layout for the debugger to use.
+
+On Windows systems, the most common compiler used is the Microsoft Visual Studio
+compiler (MSVCC). This compiler shares debugging information via a {\em PDB}
+file \citep{Schreiber:2001:UWS:375734}, generated during the build process for
+the executable. The PDB file format is unfortunately undocumented, but has been
+reverse engineered sufficiently to be able to extract accurate debugging
+information, such as struct memory layout, reliably
+\citep{Schreiber:2001:UWS:375734,moyix2007}.
+
+The PDB file for an executable is normally not shipped together with the
+executable. The executable contains a unique GUID referring to the PDB file that
+describes this executable. When the debugger wishes to debug a particular
+executable, it can then request the correct PDB file from a {\em symbol
+  server}. This design allows production binaries to be debugged, without
+needing to ship bulky debug information with final release binaries.
+
+The PDB file contains a number of useful pieces of information for a memory
+analysis framework:
+\begin{itemize}
+
+\item Struct members and memory layout. This contains information about memory
+  offsets for struct members, and their types. This is useful in order to
+  interpret the contents of memory.
+
+\item Global constants. The Windows kernel contains many important constants,
+  which are required for analysis. For example, the {\em PsActiveProcessHead} is
+  a constant pointer to the beginning of the process linked list, and is
+  required in order to list processes by walking that list.
+
+\item Function addresses. The location of functions in memory is also provided
+  in the PDB file - even if these functions are not exported. This is important
+  in order to resolve addresses back to functions (e.g. in viewing the IDT).
+
+\item Enumeration. In C an enumeration is a compact way to represent one of a
+  set of choices using an integer. The mapping between the integer value and a
+  human meaningful string is stored in the PDB file, and it is useful for
+  interpreting meaning from memory.
+\end{itemize}
+
+\section{Characterizing Kernel version variability}
+\label{kernel_variability}
+As described previously, the Volatility tool only contains a handful of profiles
+generated for different major releases of the windows kernel. However, each time
+the kernel is rebuilt by Microsoft (e.g. for a security hot fix), the code could
+be changed, and the profile could be different. The assumption made by the
+Volatility tool is that these changes are not significant and therefore, a
+profile generated from a single version of a major release will work on all
+versions from that release.
+
+We wanted to validate this assumption. We collected the windows kernel binary
+({\em ntkrnlmp.exe, ntkrpamp.exe, ntoskrnl.exe}) from several thousand machines
+in the wild using the GRR tool \citep{cohen2011distributed}. Each of these
+binaries has a unique GUID, and therefore we downloaded the corresponding PDB
+file from the public Microsoft symbol server. We then used Rekall's {\em mspdb}
+parser to extract debugging information from each PDB file.
+
+This resulted in 168 different binaries of the windows kernel for various
+versions (e.g. Windows XP, Windows Vista, Windows 7 and Windows 8) and
+architectures (e.g. I386 and AMD64). Clearly there are many more versions of the
+windows kernel in the wild than exist in the Volatility tool. It is also very
+likely that we have not collected all the versions that were ever released by
+Microsoft, so our sample size, although large, is not exhaustive.
+
+\begin{figure}[tb]
+\begin{center}
+\includegraphics[width=1\columnwidth]{results/structs_AMD64}
+\includegraphics[width=1\columnwidth]{results/structs_I386}
+\caption{Offsets for a few critical struct members across various versions of
+  the windows kernel. These offsets were derived by analyzing public debug
+  information from the Microsoft debug server for the binaries in our
+  collection.
+}
+\label{graph_structs}
+\end{center}
+\end{figure}
+
+Figure \ref{graph_structs} shows sampled offsets of four critical struct members
+for memory analysis:
+\begin{itemize}
+\item The {\em \_EPROCESS.VadRoot} is the location of the Vad within the
+  process. This is used to enumerate process allocations \citep{dolan2007vad}.
+
+\item The {\em \_KPROCESS.DirectoryTableBase} is the location of the Directory
+  Table Base (i.e. the value loaded into CR3) which is critical in constructing
+  the Virtual Address Space abstraction.
+
+\item The {\em \_EPROCESS.ImageFileName} is the file name of the running
+  binary. For example, this field might contain ``csrss.exe''.
+\end{itemize}
+
+Microsoft windows kernel versions contain four parts: The major and minor
+versions, the revision and the build number. The build number increases for each
+build (e.g. security hotfix).
+
+As can be seen in the figure, struct offsets do tend to remain stable across
+windows versions. In most cases, with a single notable exception - version
+5.2.3970.175 (GUID 466B4165EAA84AF88D29D617E86A95982), the struct offsets remain
+the same for all major windows releases. Therefore, chances are good that the
+Volatility profile for a give windows version would actually work most of the
+time for determining struct layout.
+
+\subsection{Kernel global constants variability}
+It is generally not sufficient to determine only the struct memory layout for
+memory analysis. For example, consider listing the running processes. One
+technique is to follow the doubly linked list of {\em
+  EPROCESS.ActiveProcessLinks} in each process struct
+\citep{okolica2010windows}. However, we generally need to find the start of the
+list which begins at the global kernel constant {\em PsActiveProcessHead}. The
+location for this global constant in memory is determined statically by the
+compiler at compile time, and it is usually stored in one of the data sections
+in the PE file itself.
+
+Since this information is also required by the debugger, the PDB file also
+contains information about global constants and functions (even if these are not
+actually exported via the Export Address Table). Rekall's {\em mspdb} plugin
+also extract this information into the profile.
+
+\begin{figure}[tb]
+\begin{center}
+\includegraphics[width=1\columnwidth]{results/constants_AMD64}
+\includegraphics[width=1\columnwidth]{results/constants_I386}
+\caption{Offsets for a few global kernel constants across various versions of
+  the windows kernel. These offsets were derived by analyzing public debug
+  information from the Microsoft debug server for the binaries in our
+  collection. Offsets are provided relative to the kernel image base address.
+}
+\label{graph_constants}
+\end{center}
+\end{figure}
+
+Figure \ref{graph_constants} illustrate the memory addresses of some important
+kernel constants for the kernels in our collection:
+
+\begin{itemize}
+\item {\em NtBuildLab} is the location of the NT version string
+  (e.g. ``7600.win7\_rtm.090713-1255''). This is used to identify the running
+  kernel.
+
+\item {\em PsActiveProcessHead} is the head of the active process list. This is
+  required in order to list the running processes.
+
+\item {\em NtCreateToken} is an example of a kernel function. This will normally
+  exist in the {\em .text} section of the PE file.
+
+\item {\em str:FILE\_VERSION} is literally the string ``FILE\_VERSION''. Usually
+  the compiler will place all literal strings into their own string table in the
+  {\em .rdata} section of the PE file. The compiler will then emit debugging
+  symbols for the location of each string - indicating that they are literal
+  strings. The importance of this symbol will be discussed in the following
+  sections.
+
+\end{itemize}
+
+As can be seen, the offsets of global kernel constants change dramatically
+between each build - even for the same version. This makes sense, since the
+compiler arranges global constants in their own PE section, so if any global
+constant is added or removed in the entire kernel, this affects the ordering of
+all other constants placed after it.
+
+It is therefore clear that it is unreliable to directly obtain the addresses of
+kernel globals by simply relying on the version alone. The Volatility tool
+resorts to a number of techniques to obtain these globals:
+
+\begin{itemize}
+\item Many globals are obtained from the {\em KdDebuggerDataBlock} - another
+  global kernel struct which contains pointers to many other globals (This is
+  usually scanned for).
+
+\item Scanning for kernel objects which refer to global constants (e.g. via pool
+  tag scanning or other signatures.).
+
+\item Examining the export tables of various PE binaries for exported functions.
+
+\item Dynamically disassembling code to detect calls to non exported functions.
+\end{itemize}
+
+These techniques are complex and error prone. They are also susceptible to
+anti-forensics as signature scanners can trivially be fooled by spurious
+signatures \citep{add}. Scanning for signatures over very large memory images is
+also slow and inefficient.
+
+The Rekall memory forensic framework \citep{rekall}, a fork of the Volatility
+framework, takes a different approach. Instead of guessing the location of
+various kernel constants, the framework relies on a public profile repository
+which contains every known profile from every known build of the windows
+kernel. This greatly simplifies memory analysis algorithms because the address
+of global kernel variables and functions is directly known from public debugging
+information provided by Microsoft; There is no need to scan or guess at
+all. Locating these globals is very efficient since there is no need to scan for
+signatures, making the framework fast and reducing the ability of attackers to
+subvert analysis.
+
+\section{Identifying binary versions}
+\label{identifying}
+
+The Rekall profile repository contains, at the time of writing, 309 profiles for
+various windows kernel versions (and this number is constantly
+increasing). Typically, users will simply report the GUID of the windows kernel
+found in their image, but will not provide the actual kernel binary.
+
+Previously, Rekall employed a scanning technique to locate the GUID of the NT
+kernel running within the image. Once the GUID is known, the correct profile can
+be fetched from the repository and analysis can begin. However this technique is
+still susceptible to manipulation (It is easy for attackers to simply wipe or
+alter the GUID from memory). Sometimes the GUID is paged out of memory and in
+this case it is impossible to guess it. What we really need is a reliable way to
+identify the kernel version without relying on a single signature.
+
+The problem of identifying kernel binaries in a memory image has been examined
+previously in the Linux memory analysis context \citep{roussev2014image}. In
+that paper, the authors used similarity hashing to match the kernel in a memory
+image with a corpus of known binaries.
+
+In our case, we do not always have the actual binaries but have debugging
+symbols from these binaries. We therefore need a way for deducing enough
+information about the kernel binary itself (which we may not have) from the
+debug symbols. Consider the following information present in the PDB file:
+
+\begin{itemize}
+\item String Literals. As shown in the example above, the compiler generates
+  string literals in the PE binary itself. These are then located using global
+  debugging symbols. For example, in Figure \ref{graph_constants} we know the
+  exact offsets in memory where we expect find the string ``FILE\_VERSION''.
+
+\item Function preamble. The PDB file also contains the locations of many
+  functions. We note that each function is generally preceded by 5 NOP
+  instructions in order to make room for hot patching \citep{hot_patching}. Thus
+  we can deduce that for each function in the PDB, the previous byte contains
+  the value 0x90 (NOP instruction).
+\end{itemize}
+
+The problem, therefore, boils down to identifying which of a finite set of
+kernel profiles is the one present in the memory image, based on known data that
+must exist at known offsets:
+
+\begin{enumerate}
+\item Begin by selecting a number of function names, or literal string names. We
+  term these {\em Comparison Points} since we only compare the binaries at these
+  known offsets.
+
+\item Examine all available profiles, and record the offset of these symbols,
+  and the expected data to appear at this offset (either a NOP instruction or
+  the literal string itself).
+
+\item Build a decision tree around the known comparison points to minimize the
+  number of string comparisons required for narrowing down the match. Note that
+  at this stage it is possible to determine if there are sufficient number of
+  comparison points to distinguish all profile selections. If profile selection
+  is ambiguous, further comparison points are added and the process starts
+  again.
+
+\item Scan the memory image for the longest strings using the Aho-Corasick
+  string matching algorithm \citep{aho1975efficient}.
+
+\item For each match, seek around the match to apply the decision tree
+  calculated earlier. Within a few string comparisons, the correct profile is
+  identified.
+
+\item Load the profile from the profile repository and initialize the analysis.
+\end{enumerate}
+
+In practice it was found that fewer than a dozen comparison points are required
+to characterize all the profiles in the Rekall profile repository, leading to
+extremely quick matching times. Binary identification is robust to manipulation
+since the choice of comparison points is rather arbitrary and can be changed
+easily.
+
+\subsection{Windows kernel binary identification}
+Section \ref{identifying} described an efficient algorithm for identifying a
+binary match from a set of known binaries. However, in the memory analysis
+context, this comparison must be made in the Virtual address space. Modern CPUs
+operate in protected mode, and the exact memory accessible to the kernel does
+not necessarily need to be contiguous in the physical memory image.
+
+Therefore, before we are able to apply the index classification algorithm, we
+must build a virtual address space, requiring us to identify the value of CR3,
+or the kernel's Directory Table Base (DTB).
+
+The DTB can be captured during the acquisition process and stored in the image,
+but typically it must be scanned for. The Volatility memory forensic framework
+scans for the Idle process's {\em EPROCESS} struct. It first searches for the
+literal string ``Idle'', this should exist as the {\em EPROCESS.ImageFileName}
+member. Knowing the difference between the offsets of {\em
+  EPROCESS.ImageFileName} and {\em EPROCESS.Pcb.DirectoryTableBase}, the
+framework reads the DTB and therefore locates the page tables.
+
+The problem with this approach is that it requires knowing the exact offsets of
+two {\em EPROCESS} struct members. Figure \ref{graph_structs} shows how these
+relative offsets vary between windows versions, so to know the offset we need to
+know the exact windows version we are examining - but we can not identify the
+profile without applying the profile index, which requires a valid kernel
+address space - i.e. knowing the DTB first!
+
+We solve this Catch-22 by noting that the total number of combinations of the
+{\em EPROCESS} member offsets is limited (4 combinations for 64 bit
+architectures and 6 combinations for 32 bit architectures). Therefore it is
+possible to brute force all combinations in search of a valid DTB.
+
+So in summary the complete Kernel Binary Autodetection algorithm is:
+
+\begin{itemize}
+\item Scan the image for common windows executable names (e.g. ``csrss.exe'',
+  ``cmd.exe'' etc). This scan uses the Aho-Corasick algorithm to search for all
+  strings at once.
+
+\item For each hit, brute force the DTB going through the 10 possible
+  offsets. The DTB is validated using the {\em
+    KUSER\_SHARED\_DATA.NtMajorVersion} and {\em
+    KUSER\_SHARED\_DATA.NtMinorVersion} members. Since this struct must be found
+  at a fixed location in memory and always have the same layout it is safe to
+  hardcode it \citep{temporal}. Therefore we can validate the DTB and kernel
+  address space without knowing anything about the profile itself or the kernel
+  version.
+
+\item Once a DTB is identified, we construct a virtual address space, and scan
+  for the kernel image in memory using the algorithm previously described.
+
+\end{itemize}
+
+\section{Undocumented kernel structures.}
+\label{undocumented}
+
+Section \ref{kernel_variability} examined the variability of documented kernel
+structures across different kernel versions. However, what is the variability of
+undocumented kernel structures of significance to the memory analyst?
+
+One of the most interesting kernel drivers is the Windows 32 user mode GUI
+subsystem \citep{mandt2011kernel,yuan2001windows}, implemented as
+``win32k.sys''. The data structures used in this subsystem are required to
+detect many common hooks placed by malware (e.g. {\em SetWindowsHookEx()} style
+keyloggers \citep{Sikorski:2012:PMA:2181153}).
+
+The Rekall profile repository currently contains profiles for 169 unique
+versions of this driver. However, only 33 versions include information about
+critical structures (e.g. {\em tagDESKTOP} and {\em tagWINDOWSTATION}). The
+remaining profiles only contain information about global constants and
+functions, but no structure information.
+
+Our goal is to understand how various important structures evolved through the
+released versions. Since many of these versions are not documented and do not
+have debugging information, previous researches have manually reverse engineered
+several samples from different versions. However, we are unsure if there is
+internal variability within windows versions and releases. Guided by our
+previous experience with the Windows Kernel versions, we hypothesize that the
+{\em win32k.sys} struct layout would not vary much between minor release
+versions.
+
+Given our large corpus of binaries we can directly examine this hypothesis and
+evaluate the best approach for determining struct layout when analyzing the
+Win32k GUI subsystem.
+
+\subsection{Data driven reverse engineering.}
+\label{data_driven_reversing}
+
+The literature contains a number of published systems for automatically
+detecting kernel objects from memory images \citep{sun2012reversing}. For
+example, the SigGraph system \citep{lin2011siggraph}, is capable of building
+scanners for Linux kernel structures by analyzing their internal pointer graphs.
+
+The SigGraph system, specifically does not utilize incidental knowledge about
+the system to assist in the reversing task. However on Windows systems, there
+are some helpful observation one can make to make type analysis from memory
+dumps easier.
+
+In the Windows kernel all allocations come from one of the kernel pools
+(e.g. Paged, Non-Paged or Session Pool). Allocations smaller than a page are
+preceded by a {\em POOL\_HEADER} object
+\citep{schuster2006pool,schuster2008impact}.
+
+\begin{figure}[tb]
+\begin{center}
+\includegraphics[width=0.7\columnwidth]{diagrams/structs}
+\caption{An example of a typical Windows Kernel pool allocation. The {\em
+    POOL\_HEADER} indicates the type of the allocation. This header is also part
+  of a doubly linked list with the next/previous allocation - a relation which
+  may be used to validate it. By observing the type of allocations the struct
+  members are pointing to it is possible to deduce the pointers.
+}
+\label{pool_allocations}
+\end{center}
+\end{figure}
+
+
+The pool header contains a known tag as well as indications of the previous and
+next pool allocation (within the page). Thus small pool allocations form a
+doubly linked list. Due to this property it is possible to validate the pool
+header and therefore locate it in memory.
+
+If we were to ask, ``What kernel object exists at a given virtual offset?'', we
+simply scan backwards for a suitable {\em POOL\_HEADER} structure, and from the
+pool tag, we can deduce the type of object. We can further scan forward from
+this location for other heuristics, such as pointers to certain other pool
+allocations, or doubly linked lists. We wrote a Rekall plugin called {\em
+  analyze\_structs} to perform this analysis on arbitrary memory locations.
+
+For example, Figure \ref{analyze_structs} shows the analysis of the global
+symbol {\em grpWinStaList} which is the global offset of the head of the {\em
+  tagWINDOWSTATION} list.  We can see that at offset 0x10 there is a pointer to
+the {\em tagDESKTOP} object, at offset 0x18 there is a pointer to the global
+gTermIO object etc.
+
+With Windows 7 we can find the complete struct information in the PDB file.
+This is also shown in Figure \ref{analyze_structs}. We can see that the detected
+pointers correspond with the {\em rpdeskList, pTerm, spklList, pGlobalAtomTable}
+and {\em psidUser} members.
+
+An obvious limitation of this technique is that if a pointer in the struct is
+set to NULL, we are unable to say anything about it. Hence to reveal as many
+fields as possible we need to examine as many instances of the same object type
+as we can find (e.g. via pool scanning techniques).
+
+\begin{figure}
+\label{analyze_structs}
+\begin{lstlisting}[basicstyle=\tiny\ttfamily, frame=single, linewidth=\columnwidth]
+win7.elf 22:39:38> analyze_struct ``*win32k!grpWinStaList''
+0xfa80022b0090 is inside pool allocation with tag 'Win\xe4' (0xfa80022b0000)
+    Offset     Content
+-------------- -------
+          0x10 Data:0xfa8001853bc0 Tag:Des\xeb @0xfa8001853bc0
+          0x18 Data:0xf960003af340 Const:win32k!gTermIO
+          0x28 Data:0xf900c01369f0 Tag:Uskb @0xf900c01369f0
+          0x78 Data:0xf8a002953880 Tag:AtmT @0xf8a002953880
+          0x90 Data:0xf900c1aa0880 Tag:Usse ProcessBilled:winlogon.exe
+
+win7.elf 22:42:14> print win32k_profile.tagWINDOWSTATION(0xFA80022B0090)
+[tagWINDOWSTATION tagWINDOWSTATION] @ 0xFA80022B0090
+  0x00 dwSessionId             [unsigned long:dwSessionId]: 0x00000001
+  0x08 rpwinstaNext           <tagWINDOWSTATION Pointer to [0x00000000]>
+  0x10 rpdeskList             <tagDESKTOP Pointer to [0xFA8001853BC0]>
+  0x18 pTerm                  <tagTERMINAL Pointer to [0xF960003AF340]>
+  0x20 dwWSF_Flags             [unsigned long:dwWSF_Flags]: 0x00000000
+  0x28 spklList               <tagKL Pointer to [0xF900C01369F0]>
+  0x30 ptiClipLock            <tagTHREADINFO Pointer to [0x00000000]>
+  0x38 ptiDrawingClipboard    <tagTHREADINFO Pointer to [0x00000000]>
+  0x40 spwndClipOpen          <tagWND Pointer to [0x00000000]>
+  0x48 spwndClipViewer        <tagWND Pointer to [0x00000000]>
+  0x50 spwndClipOwner         <tagWND Pointer to [0x00000000]>
+  0x58 pClipBase              <Array Pointer to [0x00000000]>
+  0x60 cNumClipFormats         [unsigned long:cNumClipFormats]: 0x00000000
+  0x64 iClipSerialNumber       [unsigned long:iClipSerialNumber]: 0x00000000
+  0x68 iClipSequenceNumber     [unsigned long:iClipSequenceNumber]: 0x00000000
+  0x70 spwndClipboardListener <tagWND Pointer to [0x00000000]>
+  0x78 pGlobalAtomTable       <_RTL_ATOM_TABLE Pointer to [0xF8A002953880]>
+  0x80 luidEndSession         [_LUID luidEndSession] @ 0xFA80022B0110
+  0x88 luidUser               [_LUID luidUser] @ 0xFA80022B0118
+  0x90 psidUser               <Void Pointer to [0xF900C1AA0880]>
+
+\end{lstlisting}
+\caption{Rekall analysis of the global symbol {\em grpWinStaList} which contains
+  an allocation of type {\em tagWINDOWSTATION}. This is followed by the exact
+  struct layout as extracted from the PDB file.  }
+\end{figure}
+
+\subsection{Code based reverse engineering.}
+The previous section demonstrates how we can deduce some struct layouts by
+observation of allocations we can find from the kernel pools. However, these
+observations are not sufficient to deduce all types of members. Specifically,
+only pointers are reliably deduced by this method. Additionally we must observe
+allocated memory in a memory dump from a running system. Often we only have the
+executable binary (e.g. from disk) but not the full memory image.
+
+In these cases, we need to resort to the more traditional reverse engineering
+approach.  Previous researches have reversed specific exemplars of the win32k
+dll which is representative of major windows version
+\citep{volatility}. However, manually reverse engineering every file in our
+large corpus of {\em win32k.sys} binaries is time consuming and error
+prone. Additionally, some tools simply contain the reversed profile data as
+``Magic Numbers'' \citep{volatility} without an explanation of where these numbers
+came from, making forensic validation and cross checking difficult.
+
+We wish to automatically extend this analysis to new binaries with minimal
+effort. We therefore wish to express the required assembler pattern as a
+template which can be applied to the new file's disassembly. In practice,
+however, the compiler is free to mix use of registers in functions, or reorder
+branches. Often identical source code will generate assembler code using
+different registers, and different branching order.
+
+Figure \ref{disassembly} shows the same code segment from two different versions
+of the {\em xxxCreateWindowStation} function. As can be seen, although the
+general sequence of instructions is similar, the exact registers are different
+for each case (This function essentially checks the {\em rpdesk} pointer of the
+global variable {\em gptiCurrent}, a global {\em tagTHREADINFO} struct). We
+therefore construct our patten match in such as way that exact register names
+are not specified, but we require the same register to be used for {\em \$var1}
+throughout the pattern. Our template can now be published and independently
+cross validated for accuracy. For example, in the event that an investigator
+finds a different version of the binary in the wild, they are able to apply the
+templates and re-derive the struct offsets directly from the binary - cross
+validating the resulting profile.
+
+\begin{figure}
+\label{disassembly}
+\begin{assembly}
+ MOV RSI, [RIP+0x276b62]        0x0 win32k!gptiCurrent
+ MOV RBP, [RSI+0x178]
+ TEST RBP, RBP
+\end{assembly}
+
+\begin{assembly}
+ MOV RSI, [RIP+0x2bbfdc]        0x0 win32k!gptiCurrent
+ MOV R15, [RSI+0x190]
+ TEST R15, R15
+\end{assembly}
+
+\begin{lstlisting}[basicstyle=\tiny\ttfamily, frame=single, linewidth=\columnwidth]
+tagTHREADINFO:
+  rpdesk:
+  - - Disassembler
+    - rules:
+      - MOV $var1, *gptiCurrent
+      - MOV $var2, [$var1+$out]
+      - TEST $var2, $var2
+      start: win32k!xxxCreateWindowStation
+      target: Pointer
+      target_args:
+        target: tagDESKTOP
+
+\end{lstlisting}
+\caption{Disassembled code for finding the {\em tagTHREADINFO.rpdesk} member
+  offset. Even though the code is identical, different versions use different
+  registers. We define a search template (Below) in YAML format to describe the
+  required pattern regardless of the exact registers used.  }
+\end{figure}
+
+Additionally, the compiler may reorder Assembler code fragments from version to
+version. When a branch is reordered, the pattern match may be split into
+different parts of the branching instruction. In order to normalize the effect
+of branching, we unroll all branches in the assembly output. This means we
+follow all branches until we reach code that is already disassembled, and then
+backtrack to resume disassembly from the branch onwards. This technique allows
+us to match our pattern against the complete code of each function.
+
+\begin{figure}[tb]
+\label{disassembly2}
+\begin{assembly}
+Address                     Instruction        Comment
+------------------ ------------------------- -------------------------------
+------ win32k!SetGlobalCursorLevel ------: 0xf97fff1dc0a4
+ 0xf97fff1dc0a4    PUSH RBX
+ 0xf97fff1dc0a6    SUB RSP, 0x20
+ 0xf97fff1dc0aa    @\hl{MOV RAX, [RIP+0x1b362f]   win32k!grpdeskRitInput}@
+ 0xf97fff1dc0b1    MOV EBX, ECX
+ 0xf97fff1dc0b3    @\hl{TEST RAX, RAX}@
+ 0xf97fff1dc0b6    JZ 0xf97fff1dc0da         win32k!SetGlobalCursorLevel+0x36
+. 0xf97fff1dc0da   MOV RCX, [RIP+0x1b3827]   win32k!gpepCSRSS
+. 0xf97fff1dc0e1   CALL QWORD [RIP+0x151ce9] win32k!imp_PsGetProcessWin32Process
+. 0xf97fff1dc0e7   MOV RCX, [RAX+0x128]      ; tagPROCESSINFO.ptiList
+. 0xf97fff1dc0ee   JMP 0xf97fff1dc11f        win32k!SetGlobalCursorLevel+0x7b
+.. 0xf97fff1dc11f  TEST RCX, RCX
+.. 0xf97fff1dc122  JNZ 0xf97fff1dc105        win32k!SetGlobalCursorLevel+0x61
+... 0xf97fff1dc105 MOV RAX, [RCX+0x178]      ; tagTHREADINFO.pq
+... 0xf97fff1dc10c MOV [RCX+0x290], EBX      ; tagTHREADINFO.iCursorLevel
+... 0xf97fff1dc112 MOV [RAX+0x148], EBX      ; tagQ.iCursorLevel
+... 0xf97fff1dc118 MOV RCX, [RCX+0x238]      ; tagTHREADINFO.ptiSibling
+.. 0xf97fff1dc124  ADD RSP, 0x20
+.. 0xf97fff1dc128  POP RBX
+.. 0xf97fff1dc129  RET
+ 0xf97fff1dc0b8    @\hl{MOV RAX, [RAX+0x18]}@          ; tagDESKTOP.rpwinstaParent
+ 0xf97fff1dc0bc    @\hl{MOV RDX, [RAX+0x10]}@          ; tagWINDOWSTATION.rpdeskList
+ 0xf97fff1dc0c0    JMP 0xf97fff1dc0d5        win32k!SetGlobalCursorLevel+0x31
+. 0xf97fff1dc0d5   TEST RDX, RDX
+. 0xf97fff1dc0d8   JNZ 0xf97fff1dc0c2        win32k!SetGlobalCursorLevel+0x1e
+.. 0xf97fff1dc0c2  @\hl{LEA R8, [RDX+0xa0]}@           ; tagDESKTOP.PtiList
+.. 0xf97fff1dc0c9  MOV RCX, [R8]             ; _LIST_ENTRY.Flink
+.. 0xf97fff1dc0cc  CMP RCX, R8
+.. 0xf97fff1dc0cf  JNZ 0xf97fff1dc0f0        win32k!SetGlobalCursorLevel+0x4c
+... 0xf97fff1dc0f0 MOV RAX, [RCX-0x108]      ; tagTHREADINFO.PtiLink
+... 0xf97fff1dc0f7 MOV [RCX+0x10], EBX
+... 0xf97fff1dc0fa MOV [RAX+0x148], EBX      ; tagQ.iCursorLevel
+... 0xf97fff1dc100 MOV RCX, [RCX]
+... 0xf97fff1dc103 JMP 0xf97fff1dc0cc        win32k!SetGlobalCursorLevel+0x28
+.. 0xf97fff1dc0d1  MOV RDX, [RDX+0x10]
+\end{assembly}
+
+\begin{lstlisting}[basicstyle=\tiny\ttfamily, frame=single, linewidth=\columnwidth]
+tagDESKTOP:
+  PtiList:
+  - - Disassembler
+    - rules:
+      - MOV $var1, *grpdeskRitInput
+      - TEST $var1, $var1
+      - MOV $var1, [$var1+$rpwinstaParent]
+      - MOV $pdesk, [$var1+$rpdeskList]
+      - LEA *, [$pdesk+$out]
+      start: win32k!SetGlobalCursorLevel
+      target: Pointer
+      target_args:
+        target: _LIST_ENTRY
+      max_separation: 300
+\end{lstlisting}
+
+\caption{An example of matching an assembler pattern across a short
+  function. First the function is unrolled such that all its branches are
+  displayed. The pattern is then applied such that the same registers are used
+  in a consistent manner. By comparing the assembly code to the struct field
+  offsets in the exported PDB we can easily infer the types of structs used in
+  this function. We can then extrapolate this inference to deduce struct offsets
+  for binary versions we have no debugging information for.
+}
+\end{figure}
+
+For example consider Figure \ref{disassembly2}. This shows a very short function
+{\em win32k!SetGlobalCursorLevel} which dereferences many pointers to a number
+of structs. The function iterates over all desktops ({\em tagDESKTOP}) and all
+threads ({\em tagTHREADINFO}) and sets their cursor level. It is quite simple to
+infer the structs and fields involved when reading the assembly code (for
+Windows 7) in conjunction with the struct definitions exported in the PDB files
+for Windows 7. The same templates can then be applied for other versions of the
+binary for which there are no exported symbols.
+
+It must be noted that this technique does not work in every case since the code
+does change from version to version, sometimes dramatically. We therefore offer
+a number of possibile templates (to different functions) that can be applied in
+turn until a match is found.
+

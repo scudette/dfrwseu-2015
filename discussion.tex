@@ -1,0 +1,75 @@
+This study's main goal was to characterize what factors change between various
+binary versions, and how these are relevant to memory analysis. We found that
+generally struct layout does not change within the same minor version, but
+global constants were found found to vary wildly with version.
+
+
+In our quest to characterize the veriation we have developed a number of very
+useful techniques:
+
+\begin{enumerate}
+\item We have developed a technique to build a ``profile index'' - a mechanism
+  to quickly detect which profile from a pre-calculated profile repository is
+  applicable for a specific memory image. Our method is resilient to
+  anti-forensic manipulation since it uses a random selection of comparison
+  points chosen from the binary code and data segments themselves.
+
+\item We have also demonstrated a data analysis technique for rapidly
+  determining struct offsets by analyzing kernel pool allocations.
+
+\item We have created an Assembler templating language which can be used to
+  match sequences of assembler code in order to extract struct offsets for
+  struct members. This technique can be applied for static binaries as well as
+  binaries found in memory images.
+\end{enumerate}
+
+How should these techniques be applied in order to improve the accuracy of
+memory analysis software?
+
+As noted previously, some memory analysis frameworks currently use techniques
+such as pool scanning, disassembling and other heuristics to guess the locations
+of global kernel variables \cite{volatility}. This is especially problematic
+when trying to locate {\em win32k.sys} global parameters, since the GUI
+subsystem has a different pool area for each session. Without contextual
+information, pool scanning techniques can not associate the correct kernel
+structures to the correct session, leading to many erroneous results.
+
+It is desirable therefore, to rely on accurate profile information in locating
+global structures. This warrants the creation and maintenance of a public
+profile repository with accurate symbol information for each version observed in
+the wild \citep{rekall-profiles}. The problem remains however, how does one know
+which profile should be used for a specific memory image?
+
+By applying the profile indexing technique, one can reliably detect the correct
+profile to use for each memory image. The profiles can then contain exact
+offsets of global variables and functions. This improves analysis because there
+is a large amount of accurate information available (for example it is possible
+to resolve addresses to function names - really helping with disassembly views).
+
+Finally we can address the problem of undocumented struct layouts. While the
+win32k.sys profiles do contain the addresses of global variables and functions,
+most do not contain struct layout.
+
+Although we can apply the assembler templates to deduce the struct layouts in a
+memory image, this is not a reliable technique, since in practice many code
+pages will not be mapped into memory - causing the disassembly of the required
+functions to fail.
+
+Instead we can collect win32k.sys binaries of all major and minor versions and
+apply the disassembly templates to the binaries themselves. Although we can
+never be absolutely sure that struct layouts are the same in all builds of the
+same version, our analysis suggests this is the case. That is, the struct layout
+for win32k.sys depend only on the major and minor version numbers of the
+win32k.sys binary itself.
+
+Therefore we can construct a profile for all win32k.sys binaries by merging the
+global constants and functions found in the PDB files provided by Microsoft with
+the canonical struct layout for the specific major and minor version. We then
+similarly create a ``profile index'' for all known win32k.sys profiles, and
+apply it on in the memory image to detect the correct profile to use.
+
+Once the correct profile is found (containing both accurate constants and
+accurate struct layouts) we can use it to conduct analysis of the memory image
+without problems.
+
+

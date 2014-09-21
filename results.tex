@@ -1,0 +1,40 @@
+We have collected 133 unique versions of the ``win32k.sys'' driver binary, and
+downloaded PDB files for these samples. We then generated assembler templates
+for many struct fields and ran these templates over these binaries in our
+collections.
+
+\begin{figure}[tb]
+\begin{center}
+\includegraphics[width=1\columnwidth]{results/win32k_AMD64_structs}
+\includegraphics[width=1\columnwidth]{results/win32k_I386_structs}
+\caption{Offsets for a selection of struct members across various versions of
+  the windows GUI subsystem. These offsets were derived by applying the
+  automated disassembly templates on the driver executable.
+}
+\label{win32k_structs}
+\end{center}
+\end{figure}
+
+Figure \ref{win32k_structs} shows a summary of struct offsets across different
+versions of the win32k driver. As can be seen the struct offsets are generally
+not changed between major and minor binary versions, although they do vary
+between each minor version.
+
+
+\begin{figure}[tb]
+\begin{center}
+\includegraphics[width=1\columnwidth]{results/win32k_AMD64_constants}
+\includegraphics[width=1\columnwidth]{results/win32k_I386_constants}
+\caption{Offsets for a selection of global constants across various versions of
+  the windows GUI subsystem. These offsets were derived by parsing the provided
+  PDB files for these binary versions.
+}
+\label{win32k_constants}
+\end{center}
+\end{figure}
+
+Simiarly Figure \ref{win32k_constants} shows that global constants vary wildly
+from build to build, hence version number alone is insufficient to provide
+reliable offsets for these constants.
+
+

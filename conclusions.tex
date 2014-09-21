@@ -1,0 +1,41 @@
+Although this paper concentrates specifically on the windows kernel binary and
+the win32k.sys GUI subsystem driver, the techniques presented are applicable for
+other drivers and binaries.
+
+Specifically the tcpip.sys driver manages the network stack and is largely
+undocumented. The same techniques we develop for constructing profiles from a
+mixture of documented and undocumented (reversed) information can be applied to
+this case.
+
+Identifying which of a set of known binaries matches the exact running binary in
+a memory image is a critical first step to memory analysis of all operating
+systems. For example, we have extended this method to auto-detect the exact
+kernel running on an OSX system.
+
+The ability to generate profiles with more accurate information allows one to
+abandon using scanning and guessing techniques for determining this information
+from the potentially compromised memory image itself. The less the framework
+relies on the memory image to derive analysis information, the more resilient it
+is to malicious manipulation. For example, the literature has noted that the
+Kernel Debugger Block can be easily overwritten by malware in such a way that
+memory analysis can fail to find it \cite{haruyama2012one}.
+
+Finally this paper presents the groundwork for ultimately addressing the
+difficult problem of Linux memory analysis. Linux kernel struct layouts vary
+wildely based on kernel configuration as well as purely on kernel version. Only
+recently has it become possible to acquire memory on a Linux system in a kernel
+version agnostic manner \citep{stuttgen2014robust}, but there is a wide need to
+reliably determine the correct profile for unknown kernels - often encountered
+during incident response situations.
+
+Previously, systems were proposed that attempted to derive all kernel struct
+offsets by examining the specific assembly instructions. However these systems,
+failed to take into account register swapping and function rebranching
+\cite{case2010dynamic}, making them less reliable for matching real kernels in
+practice. This paper's proposed assember templates are much more robust to these
+variations. Furthermore, previous dynamic analysis platoforms attempt to build a
+complete profile from the reversed parameters. However, as shown in this paper,
+we only need to gather just enough information to select the correct profile
+from a finite set of known profile variations. Future work can apply the
+techniques discussed in this paper to auto-detecting a Linux profile from an
+unknown kernel.

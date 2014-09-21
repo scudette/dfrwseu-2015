@@ -1,0 +1,19 @@
+Memory analysis is an established technique for malware analysis and is
+increasingly used for incident response. However, in most incident response
+situations, the responder often has no control over the precise version of the
+operating system that must be responded to. It is therefore critical to ensure
+that memory analysis tools are able to work with a wide range of OS kernel
+versions, as found in the wild. This paper characterizes the properties of
+different Windows kernel versions and their relevance to memory analysis. By
+collecting a large number of kernel binaries we characterize how struct offsets
+change with versions. We find that although struct layout is mostly stable
+across major and minor kernel versions, kernel global offsets vary greatly with
+version. We develop a ``profile indexing'' technique to rapidly detect the exact
+kernel version present in a memory image. We can therefore directly use known
+kernel global offsets and do not need to guess those by scanning techniques. We
+demonstrate that struct offsets can be rapidly deduced from analysis of kernel
+pool allocations, as well as by automatic disassembly of binary functions. As an
+example of an undocumented kernel driver, we use the {\em win32k.sys} GUI
+subsystem driver and develop a robust technique for combining both profile
+constants and reversed struct offsets into accurate profiles, detected using a
+profile index.

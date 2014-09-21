@@ -1,0 +1,11 @@
+*.pdf
+*.aux
+*.bbl
+*.blg
+*.log
+*.spl
+*.autosave
+*.png
+*.pyc
+TEMPFILE
+*.dvi
